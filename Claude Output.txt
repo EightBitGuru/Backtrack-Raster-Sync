@@ -1,0 +1,349 @@
+// ============================================================
+// VIC-20 RASTER SYNC ROUTINE
+// Assembler: KickAssembler
+//
+// Establishes cycle-exact raster lock on line 0 for both
+// PAL and NTSC VIC-20, then arms VIA2 T1 for frame-rate IRQ.
+//
+// PAL  (VIC 6561): 22152 cycles/frame, 312 lines x 71 cycles
+// NTSC (VIC 6560): 16965 cycles/frame, 261 lines x 65 cycles
+//
+// VIC-20 hardware notes:
+//   $9004       VIC raster counter (bits 8:1 of 9-bit counter)
+//               $9004 increments every 2 raster lines
+//               $9004=0 means raster line 0 or 1
+//               $9004=134 means raster line 268 (PAL only)
+//   $9124       VIA2 T1 counter lo byte latch
+//               Reading this register acknowledges VIA2 IRQ
+//   $9126       VIA2 T1 latch lo byte
+//   $9127       VIA2 T1 latch hi byte
+//               Writing hi byte arms/restarts the timer
+//               Timer auto-reloads from latch on each expiry
+//
+// Timing constants:
+//   Backtrack timer = cycles/frame - 1 - IRQ overhead (23 cycles)
+//   Locked timer    = cycles/frame - IRQ dispatch overhead (40 cycles)
+//
+//   IRQ overhead (backtrack path):
+//     7  CPU IRQ response
+//     4  bit $9124 (acknowledge)
+//     4  lda $9004 (raster check)
+//     2  bne not taken
+//     6  rti
+//    == 23 cycles
+//
+//   IRQ dispatch overhead (locked path):
+//     7  CPU IRQ response
+//     4  bit $9124 (acknowledge)
+//     3  ldx STATE (load state from ZP)
+//     4  lda JMPTAB_HI,x
+//     3  pha
+//     4  lda JMPTAB_LO,x
+//     3  pha
+//     6  rts (dispatch to handler)
+//     6  rti (at end of state routine)
+//    == 40 cycles
+//
+// Timer values:
+//                      PAL         NTSC
+//   Backtrack timer:   $5670       $422D   (22128 / 16941 cycles)
+//   Locked timer:      $5660       $421D   (22112 / 16925 cycles)
+//
+// Spinwait + NOP runout (backtrack frames):
+//                      PAL         NTSC
+//   Spinwait N:        4416        3379
+//   NOP runout M:      12          11
+//
+// Locked frame busy-wait:
+//                      PAL         NTSC
+//   OUTER:             5           32
+//   INNER:             883         104
+//   Payload:           NOP (2cy)   BIT zp (3cy)
+//
+// State routine cycle budget:
+//   PAL:  22152 - 40 = 22112 cycles (including RTI)
+//   NTSC: 16965 - 40 = 16925 cycles (including RTI)
+//   Each state routine MUST consume exactly this many cycles.
+// ============================================================
+
+// ============================================================
+// ZERO PAGE
+//
+// Timer values occupy $20/$21 in two sequential phases:
+//   Phase 1 (backtrack): TIMER_LO_BT / TIMER_HI_BT
+//   Phase 2 (first locked frame): TIMER_LO_LOCKED / TIMER_HI_LOCKED
+// These phases never overlap so $20/$21 are safely reused.
+// STATE occupies $22 permanently from lock detection onward.
+// Total: 3 ZP bytes.
+// ============================================================
+
+.label TIMER_LO_BT     = $20        // backtrack timer lo byte
+.label TIMER_HI_BT     = $21        // backtrack timer hi byte
+.label TIMER_LO_LOCKED = $20        // locked timer lo byte (reuses $20)
+.label TIMER_HI_LOCKED = $21        // locked timer hi byte (reuses $21)
+.label STATE           = $22        // current state machine state
+
+// ============================================================
+// PAL/NTSC DISCRIMINATION
+//
+// Waits for raster line 2/3 ($9004=1), then watches the
+// raster counter. NTSC reaches $9004=0 (line 0/1) before
+// $9004=134 (line 268). PAL reaches line 268 first.
+// ============================================================
+RASTER_SYNC:
+            lda #1                  ; [2]   $9004=1 = raster line 2/3
+wait2:      cmp $9004               ; [4]   wait for line 2/3
+            bne wait2               ; [3/2]
+
+wait268:    lda $9004               ; [4]   watch for PAL line 268 or NTSC line 0
+            beq is_ntsc             ; [3/2] hit zero first - NTSC
+            cmp #134                ; [2]   $9004=134 = line 268
+            bne wait268             ; [3/2] neither - keep watching
+                                    ;       fall through to PAL
+
+// ============================================================
+// PAL SETUP
+// Copy PAL timer values to ZP
+// ============================================================
+is_pal:
+            lda #<22128             ; [2]   PAL backtrack timer lo ($70)
+            sta TIMER_LO_BT         ; [3]
+            lda #>22128             ; [2]   PAL backtrack timer hi ($56)
+            sta TIMER_HI_BT         ; [3]
+            lda #<22112             ; [2]   PAL locked timer lo ($60)
+            sta TIMER_LO_LOCKED     ; [3]
+            lda #>22112             ; [2]   PAL locked timer hi ($56)
+            sta TIMER_HI_LOCKED     ; [3]
+            jmp sync_start          ; [3]
+
+// ============================================================
+// NTSC SETUP
+// Copy NTSC timer values to ZP
+// ============================================================
+is_ntsc:
+            lda #<16941             ; [2]   NTSC backtrack timer lo ($2D)
+            sta TIMER_LO_BT         ; [3]
+            lda #>16941             ; [2]   NTSC backtrack timer hi ($42)
+            sta TIMER_HI_BT         ; [3]
+            lda #<16925             ; [2]   NTSC locked timer lo ($1D)
+            sta TIMER_LO_LOCKED     ; [3]
+            lda #>16925             ; [2]   NTSC locked timer hi ($42)
+            sta TIMER_HI_LOCKED     ; [3]
+                                    ;       fall through to sync_start
+
+// ============================================================
+// SYNC START
+// Wait for raster line 0/1 ($9004=0), then arm VIA2 T1
+// with backtrack timer value (cycles/frame - 1 - 23).
+// Timer auto-reloads on each expiry; no reload needed in IRQ.
+// ============================================================
+sync_start:
+            lda #0                  ; [2]   target: line 0/1
+wait0:      cmp $9004               ; [4]   wait for $9004=0
+            bne wait0               ; [3/2]
+
+            lda TIMER_LO_BT         ; [3]   load backtrack timer lo from ZP
+            sta $9126               ; [4]   VIA2 T1 latch lo
+            lda TIMER_HI_BT         ; [3]   load backtrack timer hi from ZP
+            sta $9127               ; [4]   VIA2 T1 latch hi - arms timer
+
+            lda #0                  ; [2]   initialise state machine
+            sta STATE               ; [3]
+
+            cli                     ; [2]   enable interrupts
+
+// ============================================================
+// SPINWAIT + NOP RUNOUT
+//
+// Nested counted loop consumes most of the frame, then falls
+// through into the NOP runout where the IRQ is guaranteed
+// to fire. All instructions in the runout are 2 cycles,
+// collapsing IRQ instruction-completion variability to
+// exactly 2 cycles.
+//
+// Nested loop formula: OUTER x (5xINNER + 6 + payload) - 1
+//
+// PAL:  OUTER=24, INNER=182, payload=BIT abs (4cy), runout=12 NOPs
+//   24 x (5x182 + 10) - 1 = 24 x 920 - 1 = 22079 cycles
+//
+// NTSC: OUTER=5, INNER=674, payload=BIT zp (3cy), runout=11 NOPs
+//   5 x (5x674 + 9) - 1 = 5 x 3379 - 1 = 16894 cycles
+//
+// Cycle accounting (PAL, per backtrack frame):
+//   22079  spinwait nested loop
+//   24     NOP runout (12 NOPs x 2 cycles)
+//   23     IRQ overhead
+//   2      ldx #OUTER
+//   == 22128 cycles (backtrack timer value) ✓
+//
+// Cycle accounting (NTSC, per backtrack frame):
+//   16894  spinwait nested loop
+//   22     NOP runout (11 NOPs x 2 cycles)
+//   23     IRQ overhead
+//   2      ldx #OUTER
+//   == 16941 cycles (backtrack timer value) ✓
+// ============================================================
+spinwait:
+            ldx #24                 ; [2]   PAL outer count (NTSC: #5)
+sw_outer:   ldy #182                ; [2]   PAL inner count (NTSC: #674)
+sw_inner:   dey                     ; [2]
+            bne sw_inner            ; [3/2]
+            bit $9124               ; [4]   PAL payload: BIT abs (NTSC: bit $xx = BIT zp [3])
+            dex                     ; [2]
+            bne sw_outer            ; [3/2]
+
+            // NOP runout - IRQ fires somewhere in here
+            // PAL: 12 NOPs (24 cycles), NTSC: 11 NOPs (22 cycles)
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]
+            nop                     ; [2]   PAL only (omit for NTSC)
+
+            // IRQ did not fire - should not reach here
+            jmp spinwait            ; [3]   error: restart sync
+
+// ============================================================
+// BACKTRACK IRQ HANDLER
+//
+// Fires once per frame during backtracking phase.
+// Checks $9004: if still 0 we are on line 0/1, acknowledge
+// and let timer auto-reload for next frame. Eventually we
+// slide one cycle past the line 0/1 boundary into line
+// 99/309, at which point we are locked.
+//
+// Cycle accounting:
+//   7  CPU IRQ response
+//   4  bit $9124 (acknowledge VIA2 IRQ)
+//   4  lda $9004
+//   2  bne not taken (still on line 0/1)
+//   6  rti
+//  == 23 cycles ✓
+// ============================================================
+irq_backtrack:
+            bit $9124               ; [4]   acknowledge VIA2 T1 IRQ
+            lda $9004               ; [4]   check raster position
+            bne locked              ; [3/2] not line 0/1 - locked!
+            rti                     ; [6]   still on line 0/1 - try again
+
+// ============================================================
+// LOCKED: FIRST LOCKED FRAME BUSY-WAIT
+//
+// We have detected that $9004 != 0, meaning we have slid
+// one cycle past the end of line 0/1 into line 99/309.
+// We are now at a known position relative to the raster.
+//
+// We must burn exactly the right number of cycles so that
+// when we load the locked timer and RTI, we land on cycle
+// 0 of line 0.
+//
+// Cycles consumed to reach here from IRQ firing:
+//   7  CPU IRQ response
+//   4  bit $9124
+//   4  lda $9004
+//   3  bne locked taken
+//  == 18 cycles
+//
+// Remaining cycles in frame: 22152 - 18 = 22134 (PAL)
+//                            16965 - 18 = 16947 (NTSC)
+//
+// Busy-wait must consume:
+//   22134 - 14 (timer load) - 6 (rti) = 22114 cycles (PAL)
+//   16947 - 14 (timer load) - 6 (rti) = 16927 cycles (NTSC)
+//
+// Nested loop formula: OUTER x (5xINNER + 6 + payload) - 1
+//
+// PAL:  OUTER=5,  INNER=883, payload=NOP (2cy)
+//   5 x (5x883 + 8) - 1 = 5 x 4423 - 1 = 22114 ✓
+//
+// NTSC: OUTER=32, INNER=104, payload=BIT zp (3cy)
+//   32 x (5x104 + 9) - 1 = 32 x 529 - 1 = 16927 ✓
+// ============================================================
+locked:
+            ldx #5                  ; [2]   PAL outer count (NTSC: #32)
+bw_outer:   ldy #883                ; [2]   PAL inner count (NTSC: #104)
+bw_inner:   dey                     ; [2]
+            bne bw_inner            ; [3/2]
+            nop                     ; [2]   PAL payload (NTSC: bit $xx)
+            dex                     ; [2]
+            bne bw_outer            ; [3/2]
+
+            // load locked timer values from ZP and arm timer
+            lda TIMER_LO_LOCKED     ; [3]   PAL: $60 (22112), NTSC: $1D (16925)
+            sta $9126               ; [4]   VIA2 T1 latch lo
+            lda TIMER_HI_LOCKED     ; [3]   PAL: $56, NTSC: $42
+            sta $9127               ; [4]   VIA2 T1 latch hi - arms timer
+
+            rti                     ; [6]   lands on cycle 0 of line 0
+
+// ============================================================
+// LOCKED IRQ HANDLER - STATE MACHINE DISPATCH
+//
+// Arms on every frame thereafter. Acknowledges IRQ, loads
+// state byte from ZP, dispatches via jump table.
+//
+// Jump table format: parallel arrays JMPTAB_HI / JMPTAB_LO
+// Each entry is the handler address minus 1 (RTS convention).
+//
+// Dispatch overhead:
+//   7  CPU IRQ response
+//   4  bit $9124 (acknowledge)
+//   3  ldx STATE
+//   4  lda JMPTAB_HI,x
+//   3  pha
+//   4  lda JMPTAB_LO,x
+//   3  pha
+//   6  rts (dispatch)
+//   6  rti (end of state routine)
+//  == 40 cycles total
+//
+// State routine cycle budget (MUST be exact):
+//   PAL:  22152 - 40 = 22112 cycles (including RTI)
+//   NTSC: 16965 - 40 = 16925 cycles (including RTI)
+// ============================================================
+irq_locked:
+            bit $9124               ; [4]   acknowledge VIA2 T1 IRQ
+            ldx STATE               ; [3]   load current state
+            lda JMPTAB_HI,x         ; [4]   handler address hi
+            pha                     ; [3]   push hi
+            lda JMPTAB_LO,x         ; [4]   handler address lo
+            pha                     ; [3]   push lo
+            rts                     ; [6]   dispatch to handler
+                                    ;       handler ends with RTI [6]
+
+// ============================================================
+// JUMP TABLE
+// Entries are handler address minus 1 (RTS convention)
+// Add state handler addresses here as needed
+// ============================================================
+JMPTAB_HI:
+            .byte >(_state0_handler - 1)
+            .byte >(_state1_handler - 1)
+            // ... add further states as needed
+
+JMPTAB_LO:
+            .byte <(_state0_handler - 1)
+            .byte <(_state1_handler - 1)
+            // ... add further states as needed
+
+// ============================================================
+// EXAMPLE STATE HANDLERS
+// Each must consume exactly:
+//   PAL:  22112 cycles including RTI
+//   NTSC: 16925 cycles including RTI
+// ============================================================
+_state0_handler:
+            // do frame work here
+            // busy-wait or useful computation for remaining cycles
+            rti                     ; [6]
+
+_state1_handler:
+            // do frame work here
+            rti                     ; [6]
