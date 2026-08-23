@@ -9,3 +9,5 @@
 .label Backtrack_IRQ_Timer_Hi        = $0004                // Sync IRQ timer hi-byte
 .label Backtrack_Lock_Timer_Lo       = $0005                // Sync lock timer lo-byte
 .label Backtrack_Lock_Timer_Hi       = $0006                // Sync lock timer hi-byte
+.label Backtrack_Video_Flag          = $00FB                // Sync PAL/NTSC video flag
+.label Backtrack_Loop_Counter        = $00FC                // Sync loop counter
