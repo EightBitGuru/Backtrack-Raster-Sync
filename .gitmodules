@@ -1,4 +1,0 @@
-[submodule "Common-VIC20"]
-	path = Common-VIC20
-	url = https://github.com/EightBitGuru/Common-VIC20.git
-	branch = main

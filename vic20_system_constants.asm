@@ -1,4 +1,4 @@
-// VIC-20 system memory labels
+// VIC-20 system constants
 // Copyright (C) 2026 8BitGuru <the8bitguru@gmail.com>
 
 .filenamespace vic20

@@ -11,7 +11,7 @@
         .text toIntString(code,4)           // SYS address (as digits)
         .byte $3a,$8f                       // :REM
         .fill 13,vic20.screencodes.DELETE   // Message to hide BASIC line when LISTed
-        .byte vic20.screencodes.RVSON                   
+        .byte vic20.screencodes.RVSON
         .fill 22,vic20.screencodes.SPACE
         .text " BACKTRAK RASTER SYNC "
         .text " (C) 2026  8-BIT GURU "
@@ -19,6 +19,39 @@
         .byte 0                             // End-of-Line marker
 end:    .word 0                             // End-of-Program marker
         * = base+116 "stub_end"
+}
+
+
+// Burn an exact number of cycles (0, or 2 and up) without touching a register: NOPs, and one BIT zero-page for an odd count
+// Bytes: cycles / 2 (rounded down for an odd count, which uses BIT for 3 cycles). Flags: N, V and Z change if BIT is used
+.macro Pad(cycles)
+{
+	.errorif (cycles < 0) || (cycles == 1), "Pad cannot burn " + cycles + " cycles"
+	.if (mod(cycles, 2) == 1)
+	{
+		bit $00															// [3]		read zero-page (no side effects)
+	}
+	.fill floor((cycles - 3 * mod(cycles, 2)) / 2), $EA					// [2]		NOP
+}
+
+
+// Burn an exact number of cycles (6 and up) with a DEY/BNE loop and Pad
+// Bytes: 5 + the Pad. Changes .Y and the flags. The loop must not cross a page, or each taken branch costs an extra cycle
+.macro Delay(cycles)
+{
+	.var count = floor((cycles - 1) / 5)
+	.var rest = cycles - (5 * count + 1)
+	.if (rest == 1)
+	{
+		.eval count = count - 1
+		.eval rest = rest + 5
+	}
+	.errorif (count < 1) || (count > 256), "Delay cannot burn " + cycles + " cycles"
+			ldy #(count & $FF)											// [2]		set loop count
+!loop:		dey															// [2]		decrement loop count
+			bne !loop-													// [3/2]	loop until done
+	.errorif (>!loop-) != (>(*-1)), "Delay loop crosses a page: its branches would cost an extra cycle"
+	Pad(rest)
 }
 
 
