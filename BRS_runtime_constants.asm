@@ -8,7 +8,7 @@
 .label NTSC_FRAME       = 16965     // NTSC cycles per frame (261 lines of 65 cycles)
 .label PAL_LINE         = 71        // PAL cycles per raster line
 .label NTSC_LINE        = 65        // NTSC cycles per raster line
-.label ROW_SIZE         = 9         // Bytes in a PAL or NTSC row of the sync values table
+.label ROW_SIZE         = 8         // Bytes in a PAL or NTSC row of the sync values table
 
 // The sync is a closed loop of exact cycle counts. While backtracking, VIA2 T1 free-runs with a period of one cycle less than a
 // frame (the latch is two less than the period, because the 6522 reloads in N+2 cycles), so each IRQ lands one cycle earlier
@@ -93,15 +93,19 @@
 .label NTSC_OUTER       = ntscSpin.get(0)   // NTSC spin loop outer count
 .label NTSC_INNER       = ntscSpin.get(1)   // NTSC spin loop inner count
 
-// Colour bars: each of the first BAR_LINES raster lines has a stripe of colour that starts and ends on the same cycle of the line, so
-// its edges are straight if the sync is stable. A line is a loop of exactly one raster line: LDA col,X (4), STA (4), Pad, LDA # (2),
-// STA (4), INX (2), CPX # (2), BEQ (2), LDA adjust (3), BEQ (3 on PAL, 2 on NTSC), LDY count (3), DEY/BNE (5 per count less 1), JMP (3)
-.label BAR_LINES        = 240       // Raster lines with a stripe (the colour table length, up to 255)
-.label BAR_PAD          = 10        // Cycles of padding between the two writes, which with the STA and LDA makes the stripe 16 cycles wide
-.label BAR_BYTES        = 31 + BAR_PAD / 2  // Bytes in the colour bar routine, which must not cross a page
-.label BAR_BASE         = $1B       // The screen colour that ends each stripe: white screen, normal characters, cyan border
-.label PAL_LINE_DLY     = (PAL_LINE - 31 - BAR_PAD) / 5     // PAL line delay loop count
-.label NTSC_LINE_DLY    = (NTSC_LINE - 30 - BAR_PAD) / 5    // NTSC line delay loop count
-.errorif mod(PAL_LINE - 31 - BAR_PAD, 5) != 0, "The PAL line is not a whole number of delay loops: change BAR_PAD"
-.errorif mod(NTSC_LINE - 30 - BAR_PAD, 5) != 0, "The NTSC line is not a whole number of delay loops: change BAR_PAD"
-.errorif BAR_LINES > 255, "BAR_LINES must fit the .X counter"
+// Raster effects. An effect is a routine that hold_sync calls at the stable point, line 0 cycle 0: the dispatch in run_raster_effects takes
+// DISPATCH (23) to reach hold_sync's JSR (6) and the effect dispatch (31), so an effect's first instruction is at line 0 cycle EFFECT_START.
+// An effect draws a frame as a loop of exactly one raster line, writing to $900F (screen and border colour), so its writes are on the same
+// cycle of every line. It has to be finished, and the registers do not matter, well before the next IRQ: the lines it draws and the
+// bookkeeping after them must take less than a frame less the stable point and the exit
+.label EFFECT_START     = DISPATCH + 6 + 31     // Cycles from the stable point to the first instruction of an effect
+.label EFFECT_COUNT     = 3                     // Raster effects: copper bars, sine ribbon and waving flag
+.label EFFECT_FIRST_LINE = 27                  // The first raster line of the picture, in xvic 3.10 on both PAL (284 lines to 310) and NTSC (234 lines to 260)
+.label PAL_LINES        = 255                   // Raster lines an effect draws on PAL (up to 255, the .X counter and the line buffer)
+.label NTSC_LINES       = 216                   // Raster lines an effect draws on NTSC, fewer than the picture has because the copper bars for the next frame are drawn after them, and the IRQ has to be left in time for the next one
+.label SCREEN_BASE      = $08                   // The $900F value between effects and for the screen: black screen and border, normal characters
+.label PAL_COPPER_LINES  = 284                 // Raster lines the copper bars draw on PAL: the whole picture, 142 entries of the line buffer
+.label NTSC_COPPER_LINES = 232                 // Raster lines the copper bars draw on NTSC: the picture less 2 lines, because the IRQ for the next frame is due as the last of the 234 starts
+.label COMPOSE_CYCLES   = 949                 // Cycles that compose_bars takes, from its first instruction to the end of its RTS: erase 274 + draw 669 + RTS 6
+.label COPPER_HEIGHT    = 16                    // Entries in a copper bar: each is two raster lines, so the bar is 32 lines tall
+.errorif (PAL_LINES > 255) || (NTSC_LINES > 255), "An effect draws at most 255 raster lines"

@@ -55,6 +55,52 @@ end:    .word 0                             // End-of-Program marker
 }
 
 
+// Burn an exact number of cycles (0, or 2 and up), choosing Pad or Delay, and Delay again as often as it takes for a long wait
+// Changes .Y and the flags if the count is 6 or more
+.macro Wait(cycles)
+{
+	.var rest = cycles
+	.while (rest > 1200)
+	{
+		Delay(1000)
+		.eval rest = rest - 1000
+	}
+	.if (rest >= 6)
+	{
+		Delay(rest)
+	}
+	else
+	{
+		Pad(rest)
+	}
+}
+
+
+// Burn the number of cycles in .A (0 to 2^bits - 1) plus 4 + 5 * (bits - 1), one bit at a time: each bit takes a branch that costs 1, 2, 4 ...
+// cycles more when it is set. The jitter slide in service_irq is this with 3 bits, written out. Destroys .A and the flags
+.macro Slide(bits)
+{
+			lsr															// [2]		move bit 0 to Carry
+			bcs !next+													// [2/3]	take one more cycle if the bit is set
+!next:
+	.for (var bit = 1; bit < bits; bit++)
+	{
+			lsr															// [2]		move the bit to Carry
+			bcc !skip+													// [3/2]	skip the extra cycles if the bit is clear
+			Pad((1 << bit) + 1)											// [2^bit + 1]	take 2^bit more cycles than the branch skipped
+!skip:
+	}
+}
+
+
+// A $900F value for a colour: background b7-4 = the colour, b3 = normal (not reverse), border b2-0 = the colour (so the border of a light
+// colour is the dark colour it is the light version of)
+.function pair(colour)
+{
+	.return (colour << 4) | 8 | (colour & 7)
+}
+
+
 // Generate bit7-terminated strings from list
 .macro TerminatedStringBlock(list)
 {

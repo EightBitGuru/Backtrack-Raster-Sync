@@ -20,11 +20,12 @@ data:
 .import source "BRS_static_data.asm"					// Static data structures
 
 code:
+.import source "BRS_main_program.asm"					// BackTrak demo main program, which the BASIC stub runs
 .import source "BRS_raster_sync.asm"					// BackTrak raster sync
 .import source "BRS_raster_effects.asm"					// BackTrak raster effects, run when locked
 code_end:
 
-.errorif code_end > vic20.ram.RAMMAIN + $0E00, "The program runs into the screen at $1E00: it is " + [code_end - vic20.ram.RAMMAIN - $0E00] + " bytes too long"
+.errorif code_end > BRS_runtime_memory.COPBUF, "The program runs into the copper bar line buffer at $1D00: it is " + [code_end - BRS_runtime_memory.COPBUF] + " bytes too long"
 
 .print "CODE BYTES: "+[code_end-code]
 .print "DATA BYTES: "+[code-data]

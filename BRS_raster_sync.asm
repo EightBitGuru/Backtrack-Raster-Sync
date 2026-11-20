@@ -14,6 +14,14 @@ initialise_sync:
 			sei												// [2]		disable IRQ
 			cld												// [2]		clear Decimal flag so that the arithmetic is binary
 
+			// stop the RESTORE key interrupting: it is VIA1's CA1, which VIA1 turns into an NMI that nothing can mask, and the KERNAL's NMI handler at $FEAD runs the jiffy clock and, with RUN/STOP down, warm starts BASIC and resets the IRQ vector
+			lda #%01111111									// [2]		b7 = clear the bits that are set below, b6-0 = every VIA1 interrupt
+			sta vic20.via1.V1IER							// [4]		disable VIA1 interrupts (only CA1, the RESTORE key, is enabled)
+			lda #<swallow_nmi								// [2]		get NMI handler address lo-byte, for an NMI from outside (the expansion port has a line for it)
+			sta vic20.os_vars.NMIVECL						// [4]		set NMI vector lo-byte
+			lda #>swallow_nmi								// [2]		get NMI handler address hi-byte
+			sta vic20.os_vars.NMIVECH						// [4]		set NMI vector hi-byte
+
 			// set the sync IRQ handler (the KERNAL IRQ stub at $FF72 jumps through this vector)
 			lda #<service_irq								// [2]		get IRQ handler address lo-byte
 			sta vic20.os_vars.IRQVECL						// [4]		set IRQ vector lo-byte
@@ -34,11 +42,11 @@ ntsc:		ldy #BRS_runtime_constants.ROW_SIZE				// [2]		set NTSC row offset in the
 
 			// copy the sync values for the video standard to zero-page
 copy:		ldx #0											// [2]		set zero-page index
-copyloop:	lda BRS_static_data.SYNCVALS,y					// [4]		get line delay count, line adjustment and arm cut
-			sta BRS_runtime_memory.LINEDLY,x				// [4]		stash in zero-page
+copyloop:	lda BRS_static_data.SYNCVALS,y					// [4]		get the arm cut and the video standard
+			sta BRS_runtime_memory.ARMCUT,x					// [4]		stash in zero-page
 			iny												// [2]		increment sync values index
 			inx												// [2]		increment zero-page index
-			cpx #3											// [2]		check for the three values
+			cpx #2											// [2]		check for the two values
 			bne copyloop									// [3/2]	loop until done
 			lda BRS_static_data.SYNCVALS,y					// [4]		get spin loop outer count
 			sta BRS_runtime_memory.OUTERCNT					// [3]		stash in zero-page
@@ -55,8 +63,10 @@ copyloop:	lda BRS_static_data.SYNCVALS,y					// [4]		get line delay count, line 
 			lda #%11000000									// [2]		b7 = set bits, b6 = T1 interrupt
 			sta vic20.via2.V2IER							// [4]		enable VIA2 T1 interrupt
 
-			// sync to the start of raster line 0/1, where $9004 first reads zero
+			// sync to the start of raster line 0/1, where $9004 first reads zero (waiting for it to leave zero first, because the code may arrive inside its zero window)
 			ldx #0											// [2]		set raster line 0/1
+waitnz:		cpx vic20.vic.VCRASTER							// [4]		check for raster line
+			beq waitnz										// [3/2]	loop while $9004 is zero
 wait0:		cpx vic20.vic.VCRASTER							// [4]		check for raster line
 			bne wait0										// [3/2]	loop until we hit it
 
@@ -114,14 +124,6 @@ innerloop:	dey												// [2]		decrement inner count
 			.errorif BRS_runtime_constants.SPIN_PAYLOAD != 2, "The outer loop payload is a NOP: change it or SPIN_PAYLOAD"
 			.errorif (*-wait_for_irq) != BRS_runtime_constants.SPIN_BYTES, "wait_for_irq is not SPIN_BYTES long: change SPIN_BYTES"
 			.errorif (>wait_for_irq) != (>(*-1)), "wait_for_irq crosses a page: its branches would cost an extra cycle"
-}
-
-
-// Run the main program, which the arm state starts and every later IRQ interrupts
-main_loop:
-.pc = * "main_loop"
-{
-			jmp main_loop									// [3]		idle until a main program replaces this
 }
 
 
@@ -211,9 +213,9 @@ arm_sync:
 
 			// hand the CPU to the main program, which no longer has to stay in step with the IRQ
 			tsx												// [2]		get stack pointer
-			lda #<main_loop									// [2]		get main loop address lo-byte
+			lda #<BRS_main_program.main_loop				// [2]		get main loop address lo-byte
 			sta BRS_runtime_constants.RETURN_PCL,x			// [5]		replace the return address lo-byte
-			lda #>main_loop									// [2]		get main loop address hi-byte
+			lda #>BRS_main_program.main_loop				// [2]		get main loop address hi-byte
 			sta BRS_runtime_constants.RETURN_PCH,x			// [5]		replace the return address hi-byte
 			inc BRS_runtime_memory.SYNCSTAT					// [5]		set locked state
 			jmp exit_irq									// [3]
@@ -241,3 +243,13 @@ exit_irq:
 			pla												// [4]		pull .A
 			rti												// [6]		return to the interrupted code
 }
+
+
+// Return at once from an NMI, which the KERNAL handler passes to the NMI vector (the RESTORE key is already switched off at VIA1)
+swallow_nmi:
+.pc = * "swallow_nmi"
+{
+			rti												// [6]		return to the interrupted code
+}
+
+

@@ -58,6 +58,4 @@ Thumbs.db
 /vicstuff.d64
 /artifacts/fast40.zip
 /.claude
-/tests/build/
-/tests/__pycache__/
-/tests/build_*/
+/tests/
