@@ -99,13 +99,15 @@
 // cycle of every line. It has to be finished, and the registers do not matter, well before the next IRQ: the lines it draws and the
 // bookkeeping after them must take less than a frame less the stable point and the exit
 .label EFFECT_START     = DISPATCH + 6 + 31     // Cycles from the stable point to the first instruction of an effect
-.label EFFECT_COUNT     = 3                     // Raster effects: copper bars, sine ribbon and waving flag
+.label EFFECT_COUNT     = 4                     // Raster effects: copper bars, sine ribbon, waving flag and split screen
 .label EFFECT_FIRST_LINE = 27                  // The first raster line of the picture, in xvic 3.10 on both PAL (284 lines to 310) and NTSC (234 lines to 260)
 .label PAL_LINES        = 255                   // Raster lines an effect draws on PAL (up to 255, the .X counter and the line buffer)
 .label NTSC_LINES       = 216                   // Raster lines an effect draws on NTSC, fewer than the picture has because the copper bars for the next frame are drawn after them, and the IRQ has to be left in time for the next one
-.label SCREEN_BASE      = $08                   // The $900F value between effects and for the screen: black screen and border, normal characters
+.label SCREEN_BASE      = $08                   // The page of the screen: initialise_screen puts it here on every memory configuration (an unexpanded VIC-20 and one with 3K have it here already; 8K or more puts it at $1000, which is where the program runs)
+.label SCREEN_PAGE      = $1E                   // The screen is at $1E00-$1FFF
+// The $900F value between effects and for the screen: black screen and border, normal characters
 .label PAL_COPPER_LINES  = 284                 // Raster lines the copper bars draw on PAL: the whole picture, 142 entries of the line buffer
 .label NTSC_COPPER_LINES = 232                 // Raster lines the copper bars draw on NTSC: the picture less 2 lines, because the IRQ for the next frame is due as the last of the 234 starts
-.label COMPOSE_CYCLES   = 949                 // Cycles that compose_bars takes, from its first instruction to the end of its RTS: erase 274 + draw 669 + RTS 6
+.label COMPOSE_CYCLES   = 976                 // Cycles that compose_bars takes, from its first instruction to the end of its RTS: erase 274 + draw 696 (232 a bar) + RTS 6
 .label COPPER_HEIGHT    = 16                    // Entries in a copper bar: each is two raster lines, so the bar is 32 lines tall
 .errorif (PAL_LINES > 255) || (NTSC_LINES > 255), "An effect draws at most 255 raster lines"

@@ -39,7 +39,7 @@
 // => line Cycles in a raster line
 .macro CopperLines(lines, line)
 {
-			jsr compose_bars								// [6]		draw the bars in the line buffer (COMPOSE_CYCLES, which includes its RTS)
+			jsr BRS_copper_bars.compose_bars				// [6]		draw the bars in the line buffer (COMPOSE_CYCLES, which includes its RTS)
 			ldx #0											// [2]		set first line
 			lda #lines / 2									// [2]		get the pairs of lines to draw
 			sta BRS_runtime_memory.LINECNT					// [3]		set pairs of lines left
@@ -133,6 +133,17 @@
 }
 
 
+.align 128     // Start on a half page, so that the routine (under 128 bytes) does not cross a page, because its branches must not cost an extra cycle
+// The copper bars on PAL
+copper_pal:
+.pc = * "copper_pal"
+{
+			CopperLines(BRS_runtime_constants.PAL_COPPER_LINES, BRS_runtime_constants.PAL_LINE)	// [-]
+}
+copper_pal_end:
+.errorif (>copper_pal) != (>(copper_pal_end-1)), "copper_pal crosses a page: its branches would cost an extra cycle"
+
+
 // Run the raster effect for the frame, which is what hold_sync calls at the stable point
 // => EFFECT Raster effect
 // => VIDEOFLG Video standard
@@ -153,15 +164,36 @@ run_raster_effects:
 }
 
 
-.align 128     // Start on a half page, so that the routine (under 128 bytes) does not cross a page, because its branches must not cost an extra cycle
-// The copper bars on PAL
-copper_pal:
-.pc = * "copper_pal"
+// Set up the raster effects
+initialise_effects:
+.pc = * "initialise_effects"
 {
-			CopperLines(BRS_runtime_constants.PAL_COPPER_LINES, BRS_runtime_constants.PAL_LINE)	// [-]
+			lda #FirstEffect								// [2]		get the raster effect to start on
+			sta BRS_runtime_memory.EFFECT					// [4]		set raster effect
+			lda #0											// [2]
+			sta BRS_runtime_memory.FRAMECNT					// [4]		set frame counter
+			sta BRS_runtime_memory.RIBBONPH					// [4]		set sine ribbon phase
+			sta BRS_runtime_memory.FLAGPH					// [4]		set waving flag phase
+			sta BRS_runtime_memory.SPLITPH					// [4]		have the first IRQ of the split screen be the one at the top
+			sta BRS_runtime_memory.COPPH0					// [4]		set copper bar 0 phase
+			sta BRS_runtime_memory.COPOLD0					// [4]		set copper bar 0 first line
+			sta BRS_runtime_memory.COPOLD1					// [4]		set copper bar 1 first line
+			sta BRS_runtime_memory.COPOLD2					// [4]		set copper bar 2 first line
+			lda #85											// [2]		get a third of a wave
+			sta BRS_runtime_memory.COPPH1					// [4]		set copper bar 1 phase
+			lda #205										// [2]		get a phase that is not a mirror image of bar 1's (the table is half a cosine read backwards, so 170 would be where 85 is)
+			sta BRS_runtime_memory.COPPH2					// [4]		set copper bar 2 phase
+
+			// clear the copper bar line buffer to the screen colour
+			lda #BRS_runtime_constants.SCREEN_BASE			// [2]		get the screen colour
+			ldx #0											// [2]		set line
+clearloop:	sta BRS_runtime_memory.COPBUF,x					// [5]		clear a line
+			inx												// [2]		increment line
+			bne clearloop									// [3/2]	loop until done
+			rts												// [6]
 }
-copper_pal_end:
-.errorif (>copper_pal) != (>(copper_pal_end-1)), "copper_pal crosses a page: its branches would cost an extra cycle"
+
+			.errorif (* - copper_pal) > 128, "copper_pal, run_raster_effects and initialise_effects do not fit in the half page: the next routine would start on the next one"
 
 
 .align 128     // Start on a half page, so that the routine (under 128 bytes) does not cross a page, because its branches must not cost an extra cycle
@@ -173,6 +205,42 @@ copper_ntsc:
 }
 copper_ntsc_end:
 .errorif (>copper_ntsc) != (>(copper_ntsc_end-1)), "copper_ntsc crosses a page: its branches would cost an extra cycle"
+
+
+// Finish the frame: change the effect every 256 frames and move the waves on
+advance_frame:
+.pc = * "advance_frame"
+{
+	.if (!StillFrame)
+	{
+			inc BRS_runtime_memory.FRAMECNT					// [6]		increment frame counter
+			bne waves										// [3/2]	change the effect every 256 frames
+			inc BRS_runtime_memory.EFFECT					// [6]		next raster effect
+			lda BRS_runtime_memory.EFFECT					// [4]
+			cmp #BRS_runtime_constants.EFFECT_COUNT			// [2]		check for the last effect
+			bcc waves										// [3/2]	keep it if there is another
+			lda #0											// [2]		go back to the first effect
+			sta BRS_runtime_memory.EFFECT					// [4]
+
+waves:		lda BRS_runtime_memory.RIBBONPH					// [3]		get the sine ribbon phase
+			clc												// [2]
+			adc #1											// [2]		move the wave on a line
+			and #63											// [2]		keep it in the wave's 64 lines
+			sta BRS_runtime_memory.RIBBONPH					// [4]		set the sine ribbon phase
+			lda BRS_runtime_memory.FLAGPH					// [4]		get the waving flag phase
+			clc												// [2]
+			adc #1											// [2]		move the wave on a line
+			and #127										// [2]		keep it in the wave's 128 lines
+			sta BRS_runtime_memory.FLAGPH					// [4]		set the waving flag phase
+	}
+
+			rts												// [6]		return to hold_sync
+}
+
+// The demo main program's loop, which fills the space that is left (it is code that can go anywhere, and the main program's own space has none to spare)
+.import source "BRS_main_loop.asm"
+
+			.errorif (* - copper_ntsc) > 128, "copper_ntsc, advance_frame and main_loop do not fit in the half page: the next routine would start on the next one"
 
 
 .align 128     // Start on a half page, so that the routine (under 128 bytes) does not cross a page, because its branches must not cost an extra cycle
@@ -217,133 +285,3 @@ flag_ntsc:
 }
 flag_ntsc_end:
 .errorif (>flag_ntsc) != (>(flag_ntsc_end-1)), "flag_ntsc crosses a page: its branches would cost an extra cycle"
-
-
-// Set up the raster effects
-initialise_effects:
-.pc = * "initialise_effects"
-{
-			lda #FirstEffect								// [2]		get the raster effect to start on
-			sta BRS_runtime_memory.EFFECT					// [4]		set raster effect
-			lda #0											// [2]
-			sta BRS_runtime_memory.FRAMECNT					// [4]		set frame counter
-			sta BRS_runtime_memory.RIBBONPH					// [4]		set sine ribbon phase
-			sta BRS_runtime_memory.FLAGPH					// [4]		set waving flag phase
-			sta BRS_runtime_memory.COPPH0					// [4]		set copper bar 0 phase
-			sta BRS_runtime_memory.COPOLD0					// [4]		set copper bar 0 first line
-			sta BRS_runtime_memory.COPOLD1					// [4]		set copper bar 1 first line
-			sta BRS_runtime_memory.COPOLD2					// [4]		set copper bar 2 first line
-			lda #85											// [2]		get a third of a wave
-			sta BRS_runtime_memory.COPPH1					// [4]		set copper bar 1 phase
-			lda #170										// [2]		get two thirds of a wave
-			sta BRS_runtime_memory.COPPH2					// [4]		set copper bar 2 phase
-
-			// clear the copper bar line buffer to the screen colour
-			lda #BRS_runtime_constants.SCREEN_BASE			// [2]		get the screen colour
-			ldx #0											// [2]		set line
-clearloop:	sta BRS_runtime_memory.COPBUF,x					// [5]		clear a line
-			inx												// [2]		increment line
-			bne clearloop									// [3/2]	loop until done
-			rts												// [6]
-}
-
-
-// Finish the frame: change the effect every 256 frames and move the waves on
-advance_frame:
-.pc = * "advance_frame"
-{
-	.if (!StillFrame)
-	{
-			inc BRS_runtime_memory.FRAMECNT					// [6]		increment frame counter
-			bne waves										// [3/2]	change the effect every 256 frames
-			inc BRS_runtime_memory.EFFECT					// [6]		next raster effect
-			lda BRS_runtime_memory.EFFECT					// [4]
-			cmp #BRS_runtime_constants.EFFECT_COUNT			// [2]		check for the last effect
-			bcc waves										// [3/2]	keep it if there is another
-			lda #0											// [2]		go back to the first effect
-			sta BRS_runtime_memory.EFFECT					// [4]
-
-waves:		lda BRS_runtime_memory.RIBBONPH					// [3]		get the sine ribbon phase
-			clc												// [2]
-			adc #1											// [2]		move the wave on a line
-			and #63											// [2]		keep it in the wave's 64 lines
-			sta BRS_runtime_memory.RIBBONPH					// [4]		set the sine ribbon phase
-			lda BRS_runtime_memory.FLAGPH					// [4]		get the waving flag phase
-			clc												// [2]
-			adc #1											// [2]		move the wave on a line
-			and #127										// [2]		keep it in the wave's 128 lines
-			sta BRS_runtime_memory.FLAGPH					// [4]		set the waving flag phase
-	}
-
-			rts												// [6]		return to hold_sync
-}
-
-
-
-.align 256     // Start on a new page: its loops must not cross one, because the routine is counted to the cycle (COMPOSE_CYCLES)
-// Draw the copper bars in the line buffer, where each is on its own sine wave
-// Takes COMPOSE_CYCLES whatever the phases, so that the copper bars' loop starts its first line on the right cycle
-compose_bars:
-.pc = * "compose_bars"
-{
-			// erase the bars where they were
-			ldy #2											// [2]		set bar
-eraseloop:	ldx BRS_runtime_memory.COPOLD0,y				// [4]		get the bar's first entry
-			lda #BRS_runtime_constants.SCREEN_BASE			// [2]		get the screen colour
-	.for (var line = 0; line < BRS_runtime_constants.COPPER_HEIGHT; line++)
-	{
-			sta BRS_runtime_memory.COPBUF + line,x			// [5]		clear an entry of the bar
-	}
-			dey												// [2]		next bar
-			bpl eraseloop									// [3/2]	loop until done
-
-			// then move each bar along its sine wave and draw it
-			ldy #2											// [2]		set bar
-drawloop:
-	.if (!StillFrame)
-	{
-			lda BRS_runtime_memory.COPPH0,y					// [4]		get the bar's phase
-			clc												// [2]
-			adc BRS_static_data.COPSPEED,y					// [4]		move the bar's phase on
-			sta BRS_runtime_memory.COPPH0,y					// [5]		set the bar's phase
-	}
-	else
-	{
-			Pad(15)											// [15]		take the cycles that moving the phase on takes
-	}
-			ldx BRS_runtime_memory.COPPH0,y					// [4]		get the bar's phase
-			lda BRS_static_data.SINEPOS,x					// [4]		get the bar's first entry
-			ldx BRS_runtime_memory.VIDEOFLG					// [3]		get the video standard
-			bne !ntsc+										// [3/2]	NTSC has fewer entries and uses the first entry as it is
-
-			// PAL has a quarter as many entries again, so the first entry is 1.25 times as far
-			pha												// [3]		stash the first entry
-			lsr												// [2]
-			lsr												// [2]		get a quarter of it
-			sta BRS_runtime_memory.COPOLD0,y				// [5]		stash that
-			pla												// [4]		get the first entry
-			clc												// [2]
-			adc BRS_runtime_memory.COPOLD0,y				// [4]		add a quarter of it
-			jmp !done+										// [3]
-!ntsc:
-			Pad(24)											// [24]		take the cycles that scaling takes on PAL
-!done:
-			sta BRS_runtime_memory.COPOLD0,y				// [5]		stash the first entry to erase the bar next frame
-			tax												// [2]
-			sty BRS_runtime_memory.BARIDX					// [3]		stash the bar
-			lda BRS_static_data.COPOFFS,y					// [4]		get the offset of the bar's colours
-			tay												// [2]
-	.for (var line = 0; line < BRS_runtime_constants.COPPER_HEIGHT; line++)
-	{
-			lda BRS_static_data.COPSHAPE + line,y			// [4]		get the colour of an entry of the bar
-			sta BRS_runtime_memory.COPBUF + line,x			// [5]		draw an entry of the bar
-	}
-			ldy BRS_runtime_memory.BARIDX					// [3]		get the bar
-			dey												// [2]		next bar
-			bmi !end+										// [3/2]	exit after the last bar (the loop is too long for a branch back)
-			jmp drawloop									// [3]		draw the next bar
-!end:
-			rts												// [6]
-
-			.errorif (>compose_bars) != (>(*-1)), "compose_bars crosses a page: its branches would cost an extra cycle"
-}

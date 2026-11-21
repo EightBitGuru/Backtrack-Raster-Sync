@@ -2,15 +2,27 @@
 // Copyright (C) 2026 8BitGuru <the8bitguru@gmail.com>
 
 // BASIC stub macro
-.macro BasicStub(base,code)
+// A BASIC line that runs code at the same place in the program wherever BASIC loads it: SYS PEEK(43)+256*PEEK(44)+offset, where PEEK(43) and PEEK(44)
+// are the start of BASIC ($1001 on an unexpanded VIC-20, $0401 with 3K of expansion and $1201 with 8K or more) and the offset is that of the code from base
+// base is the address the file is built to load at, which is the start of BASIC on an unexpanded VIC-20
+// offset is a number, not a label, so that the size of the stub is known in the first pass
+.macro BasicStub(base,offset)
 {
         * = base "stub"
         .word end                           // Line link pointer
         .word 0                             // Line number
         .byte $9e                           // SYS
-        .text toIntString(code,4)           // SYS address (as digits)
+        .byte $c2                           // PEEK
+        .text "(43)"                        // Start of BASIC lo-byte
+        .byte $aa                           // +
+        .text "256"
+        .byte $ac                           // *
+        .byte $c2                           // PEEK
+        .text "(44)"                        // Start of BASIC hi-byte
+        .byte $aa                           // +
+        .text toIntString(offset,3)         // Offset of the code (as digits)
         .byte $3a,$8f                       // :REM
-        .fill 13,vic20.screencodes.DELETE   // Message to hide BASIC line when LISTed
+        .fill 34,vic20.screencodes.DELETE   // Message to hide BASIC line when LISTed (the 34 characters that LIST prints for it)
         .byte vic20.screencodes.RVSON
         .fill 22,vic20.screencodes.SPACE
         .text " BACKTRAK RASTER SYNC "
@@ -18,7 +30,7 @@
         .fill 22,vic20.screencodes.SPACE
         .byte 0                             // End-of-Line marker
 end:    .word 0                             // End-of-Program marker
-        * = base+116 "stub_end"
+        .pc = * "stub_end"
 }
 
 

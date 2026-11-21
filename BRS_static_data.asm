@@ -25,8 +25,8 @@ STATEJMP:				// Sync state routine addresses, indexed by SYNCSTAT
 
 
 // Raster effect routines indexed by EFFECT * 2 + VIDEOFLG, minus one for the RTS dispatch
-.var EFFECTS = List().add(BRS_raster_effects.copper_pal, BRS_raster_effects.copper_ntsc, BRS_raster_effects.ribbon_pal, BRS_raster_effects.ribbon_ntsc, BRS_raster_effects.flag_pal, BRS_raster_effects.flag_ntsc)
-.pc = * "EFFJMP"		// Raster effect routine addresses minus one, lo-bytes then hi-bytes (12 bytes)
+.var EFFECTS = List().add(BRS_raster_effects.copper_pal, BRS_raster_effects.copper_ntsc, BRS_raster_effects.ribbon_pal, BRS_raster_effects.ribbon_ntsc, BRS_raster_effects.flag_pal, BRS_raster_effects.flag_ntsc, BRS_raster_effects.split_pal, BRS_raster_effects.split_ntsc)
+.pc = * "EFFJMP"		// Raster effect routine addresses minus one, lo-bytes then hi-bytes (16 bytes)
 EFFJMP:					// Raster effect routine addresses
 .lohifill EFFECTS.size(), EFFECTS.get(i) - 1
 .errorif (>EFFJMP) != (>(*-1)), "EFFJMP crosses a page: the effect dispatch would cost an extra cycle"
@@ -53,8 +53,8 @@ EFFJMP:					// Raster effect routine addresses
 
 .var BAR_FIRE = List().add(2, 10, 8, 9, 7, 15, 1, 1)          // Copper bar colours, edge to middle: red, pink, orange, light orange, yellow, light yellow, white
 .var BAR_ICE = List().add(6, 14, 14, 3, 11, 11, 1, 1)          // blue, light blue, cyan, light cyan, white
-.var BAR_BLOOD = List().add(0, 0, 2, 2, 2, 10, 10, 10)         // black, red, pink
-.var BARS = List().add(BAR_FIRE, BAR_ICE, BAR_BLOOD)
+.var BAR_VIOLET = List().add(4, 4, 12, 12, 10, 10, 15, 1)       // purple, light purple, pink, light yellow, white
+.var BARS = List().add(BAR_FIRE, BAR_ICE, BAR_VIOLET)
 
 COPSHAPE:				// The colours of the lines of each copper bar
 .pc = * "COPSHAPE"		// COPPER_HEIGHT $900F values for each of the three bars, up to the middle then back down (36 bytes)
@@ -87,11 +87,13 @@ RIBBONPOS:				// Cycles the sine ribbon is across for a phase
 .fill 64, wave(i, 64, 8)
 .errorif (>RIBBONPOS) != (>(*-1)), "RIBBONPOS crosses a page: the first read of the sine ribbon would cost an extra cycle"
 
-// Start on a new page, so that reading SINEPOS takes the same cycles whatever the phase (the copper bars are drawn in dead time that is counted to the cycle)
+// Start on a new page, so that reading COSPOS takes the same cycles whatever the phase (the copper bars are drawn in dead time that is counted to the cycle)
 .align 256
-SINEPOS:				// First entry of a copper bar in the line buffer for a phase (an entry is two raster lines)
-.pc = * "SINEPOS"		// 0 to 101, which the PAL bars scale by 1.25 to 126 (256 bytes)
-.fill 256, floor(50.5 + 50.5 * sin(2 * PI * i / 256) + 0.5)
+COSPOS:				// First entry of a copper bar in the line buffer for the first half of a phase (an entry is two raster lines)
+.pc = * "COSPOS"		// 1 to 101 along half a cosine (the PAL bars scale it by 1.25 to 126): the bar's phase 0 to 255 is folded into 0 to 127 by reading the second half backwards (128 bytes)
+.fill 128, floor(51 - 50 * cos(2 * PI * (i + 0.5) / 256) + 0.5)
+SPLIT_HOLE:				// The rest of the page, which split_pal is placed in (BRS_split_effects.asm)
+.pc = * + 128 "SPLIT_HOLE"	// 128 bytes
 
 // Page-aligned tables, which the effects read with .X as the index
 .align 256
